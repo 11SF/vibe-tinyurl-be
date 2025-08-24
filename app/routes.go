@@ -77,7 +77,7 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 func (a *App) registerRoutes() {
 	urlRepository := url.NewRepository(a.db)
 	urlService := url.NewService(urlRepository)
-	
+
 	client := httpclient.NewHTTPClient(httpclient.ClientConfig{
 		BaseURL:     a.config.AuthenticationSrevice.BaseURL,
 		Timeout:     5 * time.Minute,
@@ -103,7 +103,7 @@ func (a *App) registerRoutes() {
 	api.Get("/analytics/:id", urlHandler.GetAnalytics)
 
 	// Redirect route
-	a.fiber.Get("/:shortCode", urlHandler.RedirectURL)
+	api.Get("/redirect/:shortCode", urlHandler.RedirectURL)
 }
 
 func (a *App) setupMiddleware() {
@@ -182,4 +182,3 @@ func (a *App) Start() {
 func (a *App) Stop() error {
 	return a.fiber.Shutdown()
 }
-
