@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	httpclient "github.com/11SF/go-common/http_client"
 	"github.com/11SF/tinyurl/app/url"
 	"github.com/11SF/tinyurl/app/user"
 	"github.com/11SF/tinyurl/configs"
@@ -76,21 +77,33 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 func (a *App) registerRoutes() {
 	urlRepository := url.NewRepository(a.db)
 	urlService := url.NewService(urlRepository)
-	urlHandler := url.NewHandler(a.config, urlService)
 	
-	userHandler := user.NewHandler(a.config)
+	client := httpclient.NewHTTPClient(httpclient.ClientConfig{
+		BaseURL:     a.config.AuthenticationSrevice.BaseURL,
+		Timeout:     5 * time.Minute,
+		ContentType: httpclient.ContentTypeJSON,
+	})
+	authClient := user.NewAuthenticationClient(a.config, *client)
+
+	urlHandler := url.NewHandler(a.config, urlService, authClient)
+	userHandler := user.NewHandler(a.config, authClient)
 
 	api := a.fiber.Group("/api/tinyurl/v1")
-	
+
+	// Auth routes
+	auth := api.Group("/auth")
+	auth.Post("/login", userHandler.Login)
+	auth.Get("/validate", userHandler.ValidateToken)
+
+	// URL routes
 	api.Post("/shorten", urlHandler.CreateURL)
 	api.Get("/urls", urlHandler.GetUserURLs)
 	api.Put("/urls", urlHandler.UpdateURL)
 	api.Delete("/urls/:id", urlHandler.DeleteURL)
 	api.Get("/analytics/:id", urlHandler.GetAnalytics)
-	
+
+	// Redirect route
 	a.fiber.Get("/:shortCode", urlHandler.RedirectURL)
-	
-	_ = userHandler
 }
 
 func (a *App) setupMiddleware() {
@@ -169,3 +182,4 @@ func (a *App) Start() {
 func (a *App) Stop() error {
 	return a.fiber.Shutdown()
 }
+

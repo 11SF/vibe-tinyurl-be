@@ -1,16 +1,29 @@
 package user
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
-	"net/http"
-	"time"
+
+	httpclient "github.com/11SF/go-common/http_client"
+	"github.com/11SF/tinyurl/configs"
 )
 
-type AuthClient struct {
-	baseURL string
-	client  *http.Client
+type authenticationClient struct {
+	config configs.Config
+	client httpclient.HTTPClient
+}
+
+type AuthenticationClient interface {
+	Login(_ context.Context, email, password, customAttr string) (*CoreAuthServiceLoginResponse, error)
+	RefreshToken(_ context.Context, refreshToken string) (*CoreAuthServiceRefreshTokenResponse, error)
+	VerifyToken(_ context.Context, accessToken string) (*VerifyTokenResponse, error)
+}
+
+func NewAuthenticationClient(config configs.Config, client httpclient.HTTPClient) AuthenticationClient {
+	return &authenticationClient{
+		config: config,
+		client: client,
+	}
 }
 
 type CoreAuthServiceLoginRequest struct {
@@ -20,9 +33,8 @@ type CoreAuthServiceLoginRequest struct {
 }
 
 type CoreAuthServiceLoginResponse struct {
-	Status  string                              `json:"status"`
-	Message string                              `json:"message"`
-	Data    CoreAuthServiceLoginResponseData    `json:"data"`
+	httpclient.CommonResponse
+	Data CoreAuthServiceLoginResponseData `json:"data"`
 }
 
 type CoreAuthServiceLoginResponseData struct {
@@ -39,68 +51,97 @@ type UserInfo struct {
 	PictureProfile string `json:"picture_profile"`
 }
 
-func NewAuthClient(baseURL string) *AuthClient {
-	return &AuthClient{
-		baseURL: baseURL,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+func (c *authenticationClient) Login(_ context.Context, email, password string, customAttr string) (*CoreAuthServiceLoginResponse, error) {
+	request := CoreAuthServiceLoginRequest{
+		Email:      email,
+		Password:   password,
+		CustomAttr: customAttr,
 	}
+
+	resByte, err := c.client.Post(c.config.AuthenticationSrevice.PathLogin, request, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CoreAuthServiceLoginResponse{}
+	err = json.Unmarshal(resByte, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
 }
 
-func (ac *AuthClient) Login(req CoreAuthServiceLoginRequest) (*CoreAuthServiceLoginResponse, error) {
-	jsonData, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequest("POST", ac.baseURL+"/login", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := ac.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var loginResp CoreAuthServiceLoginResponse
-	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("login failed with status %d: %s", resp.StatusCode, loginResp.Message)
-	}
-
-	return &loginResp, nil
+type CoreAuthServiceRefreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token"`
 }
 
-func (ac *AuthClient) ValidateToken(token string) (*UserInfo, error) {
-	req, err := http.NewRequest("GET", ac.baseURL+"/validate", nil)
+type CoreAuthServiceRefreshTokenResponse struct {
+	httpclient.CommonResponse
+	Data CoreAuthServiceLoginResponseData `json:"data"`
+}
+
+type CoreAuthServiceRefreshTokenResponseData struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int64  `json:"expires_in"`
+}
+
+func (c *authenticationClient) RefreshToken(_ context.Context, refreshToken string) (*CoreAuthServiceRefreshTokenResponse, error) {
+	request := CoreAuthServiceRefreshTokenRequest{
+		RefreshToken: refreshToken,
+	}
+
+	resByte, err := c.client.Post(c.config.AuthenticationSrevice.PathRefresh, request, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := ac.client.Do(req)
+	response := &CoreAuthServiceRefreshTokenResponse{}
+	err = json.Unmarshal(resByte, &response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token validation failed with status %d", resp.StatusCode)
+		return nil, err
 	}
 
-	var userInfo UserInfo
-	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	return response, nil
+}
+
+type VerifyTokenRequest struct {
+	AccessToken string `json:"accessToken"`
+}
+
+type VerifyTokenResponse struct {
+	httpclient.CommonResponse
+	Data VerifyTokenResponseData `json:"data"`
+}
+
+type VerifyTokenResponseData struct {
+	Issuer    string   `json:"iss"`
+	Subject   string   `json:"sub"`
+	Audience  []string `json:"aud"`
+	ExpiresAt int64    `json:"exp"`
+	NotBefore int64    `json:"nbf"`
+	IssuedAt  int64    `json:"iat"`
+	Jti       string   `json:"jti"`
+	CustAttr  string   `json:"custAttr"`
+}
+
+func (c *authenticationClient) VerifyToken(_ context.Context, accessToken string) (*VerifyTokenResponse, error) {
+	request := VerifyTokenRequest{
+		AccessToken: accessToken,
 	}
 
-	return &userInfo, nil
+	resByte, err := c.client.Post(c.config.AuthenticationSrevice.PathVerifyToken, request, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyTokenResponse{}
+	err = json.Unmarshal(resByte, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
 }

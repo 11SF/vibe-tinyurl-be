@@ -1,20 +1,24 @@
 package url
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/11SF/go-common/response"
+	"github.com/11SF/tinyurl/app/user"
 	"github.com/11SF/tinyurl/configs"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 )
 
 type Handler struct {
-	config  configs.Config
-	service Service
+	config     configs.Config
+	service    Service
+	authClient user.AuthenticationClient
 }
 
 type CreateURLRequest struct {
@@ -24,9 +28,9 @@ type CreateURLRequest struct {
 }
 
 type CreateURLResponse struct {
-	Status  string           `json:"status"`
-	Message string           `json:"message"`
-	Data    *CreateURLData   `json:"data,omitempty"`
+	Status  string         `json:"status"`
+	Message string         `json:"message"`
+	Data    *CreateURLData `json:"data,omitempty"`
 }
 
 type CreateURLData struct {
@@ -65,9 +69,9 @@ type UpdateURLRequest struct {
 }
 
 type AnalyticsResponse struct {
-	Status  string         `json:"status"`
-	Message string         `json:"message"`
-	Data    []*ClickData   `json:"data"`
+	Status  string       `json:"status"`
+	Message string       `json:"message"`
+	Data    []*ClickData `json:"data"`
 }
 
 type ClickData struct {
@@ -78,10 +82,11 @@ type ClickData struct {
 	CreatedAt string  `json:"created_at"`
 }
 
-func NewHandler(config configs.Config, service Service) *Handler {
+func NewHandler(config configs.Config, service Service, authClient user.AuthenticationClient) *Handler {
 	return &Handler{
-		config:  config,
-		service: service,
+		config:     config,
+		service:    service,
+		authClient: authClient,
 	}
 }
 
@@ -123,7 +128,7 @@ func (h *Handler) CreateURL(c *fiber.Ctx) error {
 	}
 
 	shortURL := h.config.BaseURL + "/" + url.ShortCode
-	
+
 	var expiresAtStr *string
 	if url.ExpiresAt != nil {
 		str := url.ExpiresAt.Format(time.RFC3339)
@@ -171,28 +176,51 @@ func (h *Handler) RedirectURL(c *fiber.Ctx) error {
 }
 
 func (h *Handler) GetUserURLs(c *fiber.Ctx) error {
-	userIDStr := c.Get("X-User-ID")
-	if userIDStr == "" {
-		return c.Status(401).JSON(GetURLsResponse{
+	// Extract and validate token
+	authHeader := c.Get("Authorization")
+	if authHeader == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(GetURLsResponse{
 			Status:  "error",
-			Message: "Unauthorized",
+			Message: "Authorization header required",
 		})
 	}
 
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		return c.Status(400).JSON(GetURLsResponse{
+	// Extract token from "Bearer TOKEN"
+	const bearerPrefix = "Bearer "
+	if !strings.HasPrefix(authHeader, bearerPrefix) {
+		return c.Status(fiber.StatusUnauthorized).JSON(GetURLsResponse{
 			Status:  "error",
-			Message: "Invalid user ID",
+			Message: "Invalid authorization header format",
+		})
+	}
+
+	token := authHeader[len(bearerPrefix):]
+	ctx := context.Background()
+
+	// Validate token with Auth.NS
+	claims, err := h.authClient.VerifyToken(ctx, token)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(GetURLsResponse{
+			Status:  "error",
+			Message: "Invalid or expired token",
+		})
+	}
+
+	if claims.Code != string(response.SuccessCode) {
+		return c.Status(fiber.StatusUnauthorized).JSON(GetURLsResponse{
+			Status:  "error",
+			Message: claims.Message,
 		})
 	}
 
 	limit, _ := strconv.Atoi(c.Query("limit", "20"))
 	offset, _ := strconv.Atoi(c.Query("offset", "0"))
 
-	urls, err := h.service.GetUserURLs(userID, limit, offset)
+	userId := uuid.MustParse(claims.Data.Subject)
+
+	urls, err := h.service.GetUserURLs(userId, limit, offset)
 	if err != nil {
-		slog.Error("Failed to get user URLs", "userID", userID, "error", err)
+		slog.Error("Failed to get user URLs", "userID", userId, "error", err)
 		return c.Status(500).JSON(GetURLsResponse{
 			Status:  "error",
 			Message: "Internal server error",
@@ -202,7 +230,7 @@ func (h *Handler) GetUserURLs(c *fiber.Ctx) error {
 	var urlsData []*URLData
 	for _, url := range urls {
 		shortURL := h.config.BaseURL + "/" + url.ShortCode
-		
+
 		var expiresAtStr *string
 		if url.ExpiresAt != nil {
 			str := url.ExpiresAt.Format(time.RFC3339)
@@ -229,7 +257,43 @@ func (h *Handler) GetUserURLs(c *fiber.Ctx) error {
 	})
 }
 
+func (h *Handler) validateToken(c *fiber.Ctx) (*user.VerifyTokenResponse, error) {
+	authHeader := c.Get("Authorization")
+	if authHeader == "" {
+		return nil, fiber.NewError(fiber.StatusUnauthorized, "Authorization header required")
+	}
+
+	const bearerPrefix = "Bearer "
+	if !strings.HasPrefix(authHeader, bearerPrefix) {
+		return nil, fiber.NewError(fiber.StatusUnauthorized, "Invalid authorization header format")
+	}
+
+	token := authHeader[len(bearerPrefix):]
+	ctx := context.Background()
+
+	claims, err := h.authClient.VerifyToken(ctx, token)
+	if err != nil {
+		return nil, fiber.NewError(fiber.StatusUnauthorized, "Invalid or expired token")
+	}
+
+	if claims.Code != string(response.SuccessCode) {
+		return nil, fiber.NewError(fiber.StatusUnauthorized, claims.Message)
+	}
+
+	return claims, nil
+}
+
 func (h *Handler) UpdateURL(c *fiber.Ctx) error {
+	// Validate token
+	claims, err := h.validateToken(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	_ = claims // Use claims if needed for user validation
 	var req UpdateURLRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(CreateURLResponse{
@@ -268,7 +332,7 @@ func (h *Handler) UpdateURL(c *fiber.Ctx) error {
 	}
 
 	shortURL := h.config.BaseURL + "/" + url.ShortCode
-	
+
 	var expiresAtStr *string
 	if url.ExpiresAt != nil {
 		str := url.ExpiresAt.Format(time.RFC3339)
@@ -290,6 +354,16 @@ func (h *Handler) UpdateURL(c *fiber.Ctx) error {
 }
 
 func (h *Handler) DeleteURL(c *fiber.Ctx) error {
+	// Validate token
+	claims, err := h.validateToken(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	_ = claims // Use claims if needed for user validation
 	urlIDStr := c.Params("id")
 	urlID, err := uuid.Parse(urlIDStr)
 	if err != nil {
@@ -315,6 +389,16 @@ func (h *Handler) DeleteURL(c *fiber.Ctx) error {
 }
 
 func (h *Handler) GetAnalytics(c *fiber.Ctx) error {
+	// Validate token
+	claims, err := h.validateToken(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(AnalyticsResponse{
+			Status:  "error",
+			Message: err.Error(),
+		})
+	}
+
+	_ = claims // Use claims if needed for user validation
 	urlIDStr := c.Params("id")
 	urlID, err := uuid.Parse(urlIDStr)
 	if err != nil {

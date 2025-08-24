@@ -7,12 +7,12 @@ import (
 )
 
 type Config struct {
-	AppName        string `env:"APP_NAME,required"`
-	AppPort        int    `env:"APP_PORT,required"`
-	BaseURL        string `env:"BASE_URL,required"`
-	PostgresConfig PostgresConfig
-	RedisConfig    RedisConfig
-	AuthConfig     AuthConfig
+	AppName               string `env:"APP_NAME,required"`
+	AppPort               int    `env:"APP_PORT,required"`
+	BaseURL               string `env:"BASE_URL,required"`
+	PostgresConfig        PostgresConfig
+	RedisConfig           RedisConfig
+	AuthenticationSrevice AuthenticationSrevice
 }
 
 type PostgresConfig struct {
@@ -26,8 +26,12 @@ type RedisConfig struct {
 	DB       int    `env:"REDIS_DB"`
 }
 
-type AuthConfig struct {
-	ServiceURL string `env:"AUTH_SERVICE_URL,required"`
+type AuthenticationSrevice struct {
+	BaseURL         string `env:"AUTHENTICATION_SVC_BASE_URL,required"`
+	PathLogin       string `env:"AUTHENTICATION_SVC_PATH_LOGIN,required"`
+	PathRefresh     string `env:"AUTHENTICATION_SVC_PATH_REFRESH,required"`
+	PathGetUserInfo string `env:"AUTHENTICATION_SVC_PATH_GET_USER_INFO,required"`
+	PathVerifyToken string `env:"AUTHENTICATION_SVC_PATH_VERIFY_TOKEN,required"`
 }
 
 func InitConfig() *Config {
