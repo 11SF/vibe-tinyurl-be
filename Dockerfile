@@ -1,34 +1,56 @@
-# Build stage
-FROM golang:1.23.3-alpine AS builder
+############################
+# STEP 1 build executable binary
+############################
+FROM golang:1.23.3-alpine as builder
 
-WORKDIR /app
+# Install git, SSL CA certificates, and tzdata for timezone configuration.
+RUN apk update && apk add --no-cache git ca-certificates tzdata && update-ca-certificates
 
-# Copy go mod files
-COPY go.mod go.sum ./
-RUN go mod download
+# Set timezone to Thailand (Asia/Bangkok)
+ENV TZ=Asia/Bangkok
+RUN cp /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Copy source code
+# Create appuser
+ENV USER=appuser
+ENV UID=10001
+# See https://stackoverflow.com/a/55757473/12429735RUN 
+RUN adduser \    
+  --disabled-password \    
+  --gecos "" \    
+  --home "/nonexistent" \    
+  --shell "/sbin/nologin" \    
+  --no-create-home \    
+  --uid "${UID}" \    
+  "${USER}"
+
+WORKDIR $GOPATH/myapp
 COPY . .
+# Fetch dependencies.
+# Using go mod with go 1.11
+RUN go mod download
+RUN go mod verify
+# Build the binary
+RUN GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o /go/bin/myapp ./cmd
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o main ./cmd/main.go
+############################
+# STEP 2 build a small image
+############################
+FROM scratch
 
-# Runtime stage
-FROM alpine:latest
+# Import from builder.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /etc/passwd /etc/passwd
+COPY --from=builder /etc/group /etc/group
+COPY --from=builder /usr/share/zoneinfo/Asia/Bangkok /usr/share/zoneinfo/Asia/Bangkok
+COPY --from=builder /etc/localtime /etc/localtime
+COPY --from=builder /etc/timezone /etc/timezone
 
-# Install ca-certificates for HTTPS requests
-RUN apk --no-cache add ca-certificates tzdata
+# Copy our static executable
+COPY --from=builder /go/bin/myapp /go/bin/myapp
 
-WORKDIR /root/
+# Use an unprivileged user.
+USER appuser:appuser
 
-# Copy the binary from builder stage
-COPY --from=builder /app/main .
+# Run the hello binary.
+ENTRYPOINT ["/go/bin/myapp"]
 
-# Copy config directory
-COPY --from=builder /app/configs ./configs
-
-# Expose port
-EXPOSE 8080
-
-# Run the application
-CMD ["./main"]
