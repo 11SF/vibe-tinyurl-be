@@ -100,9 +100,32 @@ func (h *Handler) CreateURL(c *fiber.Ctx) error {
 	}
 
 	var userID *uuid.UUID
-	if userIDStr := c.Get("X-User-ID"); userIDStr != "" {
-		if id, err := uuid.Parse(userIDStr); err == nil {
-			userID = &id
+	
+	// Check if user is authenticated via Authorization header
+	authHeader := c.Get("Authorization")
+	if authHeader != "" {
+		const bearerPrefix = "Bearer "
+		if strings.HasPrefix(authHeader, bearerPrefix) {
+			token := authHeader[len(bearerPrefix):]
+			ctx := context.Background()
+			
+			// Validate token with Auth.NS
+			claims, err := h.authClient.VerifyToken(ctx, token)
+			if err == nil && claims.Code == string(response.SuccessCode) {
+				// Extract user ID from JWT subject
+				if id, err := uuid.Parse(claims.Data.Subject); err == nil {
+					userID = &id
+				}
+			}
+		}
+	}
+	
+	// Fallback to X-User-ID header if no valid token
+	if userID == nil {
+		if userIDStr := c.Get("X-User-ID"); userIDStr != "" {
+			if id, err := uuid.Parse(userIDStr); err == nil {
+				userID = &id
+			}
 		}
 	}
 
